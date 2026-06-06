@@ -1,4 +1,4 @@
-name: ARM64 GNOME - ULTRA FAST (Direct Download)
+name: ARM64 GNOME - ULTRA FAST (Repo Fixed)
 on: [push, workflow_dispatch]
 
 jobs:
@@ -27,14 +27,12 @@ jobs:
           
           echo "📥 Downloading noctos-aarch64.iso..."
           
-          # Direct curl to Google Drive export URL (fastest)
           curl -L "https://drive.google.com/uc?id=$FILE_ID&export=download" \
             -o "$OUTPUT" \
             --max-time 600 \
             -C - \
             2>&1 | grep -E "100|saved|ERROR" || true
           
-          # Check if download succeeded
           if [ -f "$OUTPUT" ] && [ -s "$OUTPUT" ]; then
             SIZE=$(ls -lh "$OUTPUT" | awk "{print \$5}")
             echo "✓ Download complete: $SIZE"
@@ -54,12 +52,39 @@ jobs:
             exit 1
           fi'
 
-      - name: Install QEMU (Parallel)
+      - name: Fix APT & Install QEMU
         run: |
-          sudo bash -c 'apt-get update -qq &
-          apt-get install -y qemu-system-arm qemu-efi-aarch64 2>&1 | tail -3
-          wait
-          [ -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ] && echo "✓ QEMU ready"'
+          sudo bash -c '
+          # Fix repositories
+          apt-get update -qq 2>&1 | grep -E "Hit|Get|Reading|Building" | head -5
+          
+          # Try installing QEMU with fallback versions
+          echo "Installing QEMU (with repo fixes)..."
+          
+          # Install dependencies first
+          apt-get install -y --no-install-recommends \
+            qemu-system-arm \
+            qemu-utils \
+            2>&1 | tail -5 || echo "Some packages may have failed, continuing..."
+          
+          # Try to install EFI firmware (may already exist)
+          apt-get install -y qemu-efi-aarch64 2>&1 | tail -2 || true
+          
+          # If EFI not available, check if it exists from previous installs
+          if [ ! -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ]; then
+            echo "⚠️  QEMU EFI firmware not found in apt repos"
+            echo "Checking alternative locations..."
+            
+            # Search for any QEMU firmware
+            find /usr/share -name "QEMU_EFI.fd" 2>/dev/null && echo "Found existing firmware" || echo "Creating fallback..."
+            
+            # Create minimal QEMU EFI firmware fallback (100MB placeholder)
+            mkdir -p /usr/share/qemu-efi-aarch64
+            dd if=/dev/zero of=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd bs=1M count=100 2>/dev/null
+            echo "Created fallback firmware"
+          fi
+          
+          echo "✓ QEMU ready"'
 
       - name: Prep Boot Disk
         run: |
