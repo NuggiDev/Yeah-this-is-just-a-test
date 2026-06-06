@@ -11,21 +11,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3-pip
           
+          # Install gdown system-wide
           sudo pip3 install gdown --break-system-packages
+          
           sudo mkdir -p /mnt/iso-data
           
-          # Fixed syntax for gdown 6.x
+          # Pass the Google Drive file ID directly as a positional argument
           sudo gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso
 
       - name: Extract Custom ISO & Mount Native Layout
         run: |
+          # Install management tools on the host runner
           sudo apt-get install -y tmux novnc squashfs-tools
 
           sudo mkdir -p /tmp/iso-mount
           sudo mkdir -p /mnt/custom-os
           
+          # Mount the downloaded ISO image
           sudo mount -o loop /mnt/iso-data/noctos-aarch64.iso /tmp/iso-mount
 
+          # Handle the filesystem extraction dynamically
           if [ -f /tmp/iso-mount/arch/x86_64/airootfs.sfs ] || [ -f /tmp/iso-mount/arch/boot/aarch64/airootfs.sfs ] || [ -f /tmp/iso-mount/live/filesystem.squashfs ]; then
             echo "SquashFS found! Unpacking internal rootfs..."
             SFS_PATH=$(find /tmp/iso-mount/ -name "*.squashfs" -o -name "*.sfs" | head -n 1)
@@ -37,13 +42,19 @@ jobs:
 
           sudo umount /tmp/iso-mount
 
-          # Bind native device architecture paths
+          # Ensure virtual system endpoints exist to prevent mount error 32
+          sudo mkdir -p /mnt/custom-os/dev
+          sudo mkdir -p /mnt/custom-os/sys
+          sudo mkdir -p /mnt/custom-os/proc
+          sudo mkdir -p /mnt/custom-os/dev/pts
+
+          # Bind the host hardware infrastructure to the environment layout
           sudo mount --bind /dev /mnt/custom-os/dev
           sudo mount --bind /sys /mnt/custom-os/sys
           sudo mount --bind /proc /mnt/custom-os/proc
           sudo mount --bind /dev/pts /mnt/custom-os/dev/pts
 
-          # Sync mirrorlists and install display server inside NoctOS
+          # Sync pacman and install the display server packages directly within the rootfs
           echo "Syncing mirrorlists and installing display server inside NoctOS..."
           sudo chroot /mnt/custom-os /bin/bash -c "
             pacman-key --init && pacman-key --populate archlinuxarm || true
@@ -52,7 +63,7 @@ jobs:
 
       - name: Start GNOME & Stream Display to Web URL
         run: |
-          # Create the startup script inside the rootfs
+          # Write the internal engine initialization script inside the rootfs folder tree
           sudo bash -c 'cat << EOF > /mnt/custom-os/start-desktop.sh
           #!/bin/bash
           export \$(dbus-launch)
@@ -63,15 +74,16 @@ jobs:
           export DISPLAY=:1
           export XDG_CURRENT_DESKTOP=GNOME
           
+          # Initialize the display frame logic inside the native container
           vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None
           gnome-session &
           EOF'
           sudo chmod +x /mnt/custom-os/start-desktop.sh
 
-          # Launch the proxy to pipe the desktop signals to a web browser port
+          # Open the local network socket proxy using tmux
           tmux new-session -d -s novnc "websockify --web=/usr/share/novnc/ 8080 localhost:5901"
           
-          # Run the script inside the chroot
+          # Run the engine startup initialization using chroot bounds
           sudo chroot /mnt/custom-os /bin/bash /start-desktop.sh &
 
           echo "=========================================================="
