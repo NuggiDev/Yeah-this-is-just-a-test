@@ -21,7 +21,7 @@ jobs:
           
           ls -lh "$GITHUB_WORKSPACE/iso-data/"
 
-      - name: Extract Custom ISO & Mount Native Layout
+            - name: Extract Custom ISO & Mount Native Layout
         run: |
           sudo apt-get install -y tmux tigervnc-standalone-server novnc dbus-x11 squashfs-tools
           
@@ -33,16 +33,25 @@ jobs:
           echo "=== FULL ISO STRUCTURE ==="
           sudo ls -la /tmp/iso-mount/
           echo "--------------------------------"
-          sudo find /tmp/iso-mount -maxdepth 5 -type f | head -30 || true
+          sudo find /tmp/iso-mount -maxdepth 4 -type f | head -20 || true
           echo "--------------------------------"
           
-          # For pacstrap-built Arch ISO
-          if sudo test -d "/tmp/iso-mount/airootfs"; then
-            echo "✅ Found airootfs directory"
+          # Copy from airootfs (your pacstrap build)
+          if [ -d "/tmp/iso-mount/airootfs" ]; then
+            echo "✅ Found airootfs directory - copying rootfs..."
             sudo cp -a /tmp/iso-mount/airootfs/. "$GITHUB_WORKSPACE/custom-os/" || true
-          elif sudo test -f "/tmp/iso-mount/airootfs.sfs"; then
-            echo "✅ Found airootfs.sfs"
-            sudo unsquashfs -d "$GITHUB_WORKSPACE/custom-os" -f "/tmp/iso-mount/airootfs.sfs"
           else
-            echo "⚠️ Falling back to full copy"
-            sudo cp -a /tmp/iso-mount/. "$GITHUB_WORKSPACE/custom
+            echo "⚠️ No airootfs found, copying everything..."
+            sudo cp -a /tmp/iso-mount/. "$GITHUB_WORKSPACE/custom-os/" 2>/dev/null || true
+          fi
+          
+          sudo umount /tmp/iso-mount 2>/dev/null || true
+          
+          echo "Extracted size:"
+          sudo du -sh "$GITHUB_WORKSPACE/custom-os" || true
+          
+          # Bind mounts
+          for dir in dev sys proc dev/pts run; do
+            sudo mkdir -p "$GITHUB_WORKSPACE/custom-os/$dir"
+            sudo mount --bind "/$dir" "$GITHUB_WORKSPACE/custom-os/$dir" 2>/dev/null || true
+          done
