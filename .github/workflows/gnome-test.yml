@@ -1,77 +1,108 @@
 name: Test Native ARM64 GNOME OS from Google Drive ISO
+
 on: [push, workflow_dispatch]
 
 jobs:
   launch-desktop:
     runs-on: ubuntu-24.04-arm
-
     steps:
       - name: Install gdown & Pull ISO from Google Drive
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-pip
+          sudo apt-get install -y python3-pip curl
           
-          # Install the tool to bypass the Google Drive large file warning screen
           pip3 install gdown --break-system-packages
           
-          mkdir -p /mnt/iso-data
+          # Use GitHub workspace (always writable)
+          mkdir -p "$GITHUB_WORKSPACE/iso-data"
           
-          # Injected your exact Google Drive File ID for noctos-aarch64.iso
-          gdown --id "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso
+          echo "Downloading NoctOS aarch64 ISO..."
+          gdown --id "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" \
+                -O "$GITHUB_WORKSPACE/iso-data/noctos-aarch64.iso"
+          
+          ls -lh "$GITHUB_WORKSPACE/iso-data/"
 
       - name: Extract Custom ISO & Mount Native Layout
         run: |
           sudo apt-get install -y tmux tigervnc-standalone-server novnc dbus-x11 squashfs-tools
-
-          mkdir -p /tmp/iso-mount
-          mkdir -p /mnt/custom-os
           
-          # Mount the 5GB file pulled from your Drive
-          sudo mount -o loop /mnt/iso-data/noctos-aarch64.iso /tmp/iso-mount
-
-          # Dynamically look for the underlying filesystem layout inside NoctOS
-          if [ -f /tmp/iso-mount/arch/x86_64/airootfs.sfs ] || [ -f /tmp/iso-mount/arch/boot/aarch64/airootfs.sfs ] || [ -f /tmp/iso-mount/live/filesystem.squashfs ]; then
-            echo "SquashFS found! Unpacking internal rootfs..."
-            SFS_PATH=$(find /tmp/iso-mount/ -name "*.squashfs" -o -name "*.sfs" | head -n 1)
-            sudo unsquashfs -d /mnt/custom-os -f "$SFS_PATH"
+          mkdir -p /tmp/iso-mount "$GITHUB_WORKSPACE/custom-os"
+          
+          echo "Mounting ISO..."
+          sudo mount -o loop "$GITHUB_WORKSPACE/iso-data/noctos-aarch64.iso" /tmp/iso-mount
+          
+          # Detect and extract rootfs
+          if find /tmp/iso-mount -name "*.squashfs" -o -name "*.sfs" | head -n 1 > /dev/null; then
+            echo "SquashFS found! Unpacking..."
+            SFS_PATH=$(find /tmp/iso-mount -name "*.squashfs" -o -name "*.sfs" | head -n 1)
+            sudo unsquashfs -d "$GITHUB_WORKSPACE/custom-os" -f "$SFS_PATH"
           else
-            echo "Standard file structure found. Copying files directly..."
-            sudo cp -a /tmp/iso-mount/* /mnt/custom-os/
+            echo "Copying ISO contents directly..."
+            sudo cp -a /tmp/iso-mount/* "$GITHUB_WORKSPACE/custom-os/"
           fi
-
+          
           sudo umount /tmp/iso-mount
+          
+          # Bind mounts for chroot
+          sudo mount --bind /dev "$GITHUB_WORKSPACE/custom-os/dev"
+          sudo mount --bind /sys "$GITHUB_WORKSPACE/custom-os/sys"
+          sudo mount --bind /proc "$GITHUB_WORKSPACE/custom-os/proc"
+          sudo mount --bind /dev/pts "$GITHUB_WORKSPACE/custom-os/dev/pts"
+          sudo mount --bind /run "$GITHUB_WORKSPACE/custom-os/run" 2>/dev/null || true
 
-          # Bind the system paths natively to the ARM64 server core
-          sudo mount --bind /dev /mnt/custom-os/dev
-          sudo mount --bind /sys /mnt/custom-os/sys
-          sudo mount --bind /proc /mnt/custom-os/proc
-          sudo mount --bind /dev/pts /mnt/custom-os/dev/pts
-
-      - name: Start GNOME & Stream Display to Web URL
+      - name: Start GNOME & Stream Display
         run: |
-          # Create the isolated display startup environment script
-          sudo bash -c 'cat << EOF > /mnt/custom-os/start-desktop.sh
+          # Create desktop startup script
+          sudo bash -c 'cat << "EOF" > '"$GITHUB_WORKSPACE"'/custom-os/start-desktop.sh
           #!/bin/bash
-          export \$(dbus-launch)
+          set -e
+          
           export XDG_RUNTIME_DIR=/tmp/runtime-root
-          mkdir -p \$XDG_RUNTIME_DIR
-          chmod 700 \$XDG_RUNTIME_DIR
-
+          mkdir -p $XDG_RUNTIME_DIR
+          chmod 700 $XDG_RUNTIME_DIR
+          
           export DISPLAY=:1
           export XDG_CURRENT_DESKTOP=GNOME
+          export DBUS_SESSION_BUS_ADDRESS=$(dbus-launch --sh-syntax | grep DBUS_SESSION_BUS_ADDRESS | cut -d= -f2)
           
-          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None
-          gnome-session &
+          echo "Starting TigerVNC server..."
+          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None -localhost no
+          
+          echo "Starting GNOME session..."
+          gnome-session --session=gnome &
+          
+          echo "Desktop environment started."
+          wait
           EOF'
-          sudo chmod +x /mnt/custom-os/start-desktop.sh
-
-          # Launch the proxy to pipe the desktop signals to a web browser port
-          tmux new-session -d -s novnc "websockify --web=/usr/share/novnc/ 8080 localhost:5901"
           
-          # Run the script inside the chroot
-          sudo chroot /mnt/custom-os /bin/bash /start-desktop.sh &
-
+          sudo chmod +x "$GITHUB_WORKSPACE/custom-os/start-desktop.sh"
+          
+          # Start noVNC websockify
+          tmux new-session -d -s novnc \
+            "websockify --web=/usr/share/novnc/ 8080 localhost:5901"
+          
+          echo "Starting desktop in chroot..."
+          sudo chroot "$GITHUB_WORKSPACE/custom-os" /bin/bash /start-desktop.sh &
+          
+          sleep 8  # Give services time to start
+          
           echo "=========================================================="
-          echo "CLICK THE LINK BELOW TO OPEN YOUR LIVE ARM64 GNOME DISPLAY"
+          echo "          LIVE ARM64 GNOME DESKTOP"
           echo "=========================================================="
-          curl -s https://localhost.run | ssh -R 80:localhost:8080 noc@localhost.run
+          
+          # === Public tunnel using localhost.run ===
+          echo "Creating public tunnel with localhost.run..."
+          ssh -o StrictHostKeyChecking=no -R 80:localhost:8080 noc@ssh.localhost.run &
+          TUNNEL_PID=$!
+          
+          echo "Waiting for tunnel to establish..."
+          sleep 6
+          
+          echo ""
+          echo "✅ Your live desktop should be available at:"
+          echo "   https://noc.ssh.localhost.run"
+          echo ""
+          echo "Keep this workflow running to maintain the session."
+          
+          # Keep workflow alive
+          tail -f /dev/null
