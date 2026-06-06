@@ -9,31 +9,32 @@
           
           echo "=== Full ISO Structure ==="
           sudo ls -la /tmp/iso-mount/
-          sudo find /tmp/iso-mount -maxdepth 3 -type f | head -20 || true
+          echo "--------------------------------"
+          sudo find /tmp/iso-mount -maxdepth 4 -type f | head -30 || true
           
-          # Try common Arch locations
+          # Try common Arch / pacstrap locations
           SFS_PATH=$(sudo find /tmp/iso-mount -type f \( -name "airootfs.sfs" -o -name "*.squashfs" -o -name "*.sfs" \) 2>/dev/null | head -n 1)
           
           if [ -n "$SFS_PATH" ]; then
             echo "✅ Found SquashFS: $SFS_PATH"
             sudo unsquashfs -d "$GITHUB_WORKSPACE/custom-os" -f "$SFS_PATH"
           elif [ -d "/tmp/iso-mount/airootfs" ]; then
-            echo "✅ airootfs directory found (not compressed). Copying directly..."
+            echo "✅ Found airootfs directory (pacstrap style)"
             sudo cp -a /tmp/iso-mount/airootfs/* "$GITHUB_WORKSPACE/custom-os/" 2>/dev/null || true
             sudo cp -a /tmp/iso-mount/airootfs/. "$GITHUB_WORKSPACE/custom-os/" 2>/dev/null || true
           else
-            echo "⚠️ No airootfs found. Copying everything..."
+            echo "⚠️ No airootfs or squashfs found. Copying everything..."
             sudo cp -a /tmp/iso-mount/* "$GITHUB_WORKSPACE/custom-os/" 2>/dev/null || true
           fi
           
           sudo umount /tmp/iso-mount || true
           
           echo "Extracted size:"
-          sudo du -sh "$GITHUB_WORKSPACE/custom-os"
+          sudo du -sh "$GITHUB_WORKSPACE/custom-os" || true
           
-          # Bind system dirs
-          sudo mount --bind /dev "$GITHUB_WORKSPACE/custom-os/dev"
-          sudo mount --bind /sys "$GITHUB_WORKSPACE/custom-os/sys"
-          sudo mount --bind /proc "$GITHUB_WORKSPACE/custom-os/proc"
+          # Bind system directories
+          sudo mount --bind /dev "$GITHUB_WORKSPACE/custom-os/dev" 2>/dev/null || true
+          sudo mount --bind /sys "$GITHUB_WORKSPACE/custom-os/sys" 2>/dev/null || true
+          sudo mount --bind /proc "$GITHUB_WORKSPACE/custom-os/proc" 2>/dev/null || true
           sudo mount --bind /dev/pts "$GITHUB_WORKSPACE/custom-os/dev/pts" 2>/dev/null || true
           sudo mount --bind /run "$GITHUB_WORKSPACE/custom-os/run" 2>/dev/null || true
