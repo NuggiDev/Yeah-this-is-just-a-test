@@ -21,7 +21,7 @@ jobs:
           
           ls -lh "$GITHUB_WORKSPACE/iso-data/"
 
-            - name: Extract Custom ISO & Mount Native Layout
+      - name: Extract Custom ISO & Mount Native Layout
         run: |
           sudo apt-get install -y tmux tigervnc-standalone-server novnc dbus-x11 squashfs-tools
           
@@ -55,3 +55,56 @@ jobs:
             sudo mkdir -p "$GITHUB_WORKSPACE/custom-os/$dir"
             sudo mount --bind "/$dir" "$GITHUB_WORKSPACE/custom-os/$dir" 2>/dev/null || true
           done
+
+      - name: Start GNOME & Stream Display
+        run: |
+          echo "Creating desktop startup script..."
+          sudo bash -c 'cat << "EOF" > '"$GITHUB_WORKSPACE"'/custom-os/start-desktop.sh
+          #!/bin/bash
+          set -e
+
+          export XDG_RUNTIME_DIR=/tmp/runtime-root
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+          export DISPLAY=:1
+          export XDG_CURRENT_DESKTOP=GNOME
+
+          # Start D-Bus
+          eval $(dbus-launch --sh-syntax)
+
+          echo "Starting TigerVNC server..."
+          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None -localhost no
+
+          echo "Starting GNOME session..."
+          gnome-session --session=gnome &
+
+          echo "Desktop started. Keeping session alive..."
+          tail -f /dev/null
+          EOF'
+
+          sudo chmod +x "$GITHUB_WORKSPACE/custom-os/start-desktop.sh"
+
+          # Start noVNC
+          tmux new-session -d -s novnc "websockify --web=/usr/share/novnc/ 8080 localhost:5901"
+
+          echo "Launching desktop in chroot..."
+          sudo chroot "$GITHUB_WORKSPACE/custom-os" /bin/bash /start-desktop.sh &
+
+          sleep 12
+
+          echo "=========================================================="
+          echo "          LIVE ARM64 GNOME DESKTOP READY"
+          echo "=========================================================="
+
+          echo "Creating public tunnel with localhost.run..."
+          ssh -o StrictHostKeyChecking=no -R 80:localhost:8080 noc@ssh.localhost.run &
+
+          echo ""
+          echo "✅ Open this link in your browser:"
+          echo "   https://noc.ssh.localhost.run"
+          echo ""
+          echo "Keep this workflow running to keep the desktop alive."
+          
+          # Keep workflow alive
+          tail -f /dev/null
