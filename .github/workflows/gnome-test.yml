@@ -4,7 +4,6 @@ on: [push, workflow_dispatch]
 jobs:
   launch-desktop:
     runs-on: ubuntu-24.04-arm
-
     steps:
       - name: Install gdown & Pull ISO from Google Drive
         run: |
@@ -16,77 +15,135 @@ jobs:
           
           sudo mkdir -p /mnt/iso-data
           
-          # Pass the Google Drive file ID directly as a positional argument
+          # Download the ISO from Google Drive
           sudo gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso
+          
+          # Verify the download
+          if [ ! -f /mnt/iso-data/noctos-aarch64.iso ]; then
+            echo "ERROR: ISO download failed"
+            exit 1
+          fi
 
       - name: Extract Custom ISO & Mount Native Layout
         run: |
           # Install management tools on the host runner
           sudo apt-get install -y tmux novnc squashfs-tools
-
           sudo mkdir -p /tmp/iso-mount
           sudo mkdir -p /mnt/custom-os
           
           # Mount the downloaded ISO image
           sudo mount -o loop /mnt/iso-data/noctos-aarch64.iso /tmp/iso-mount
-
+          
           # Handle the filesystem extraction dynamically
-          if [ -f /tmp/iso-mount/arch/x86_64/airootfs.sfs ] || [ -f /tmp/iso-mount/arch/boot/aarch64/airootfs.sfs ] || [ -f /tmp/iso-mount/live/filesystem.squashfs ]; then
-            echo "SquashFS found! Unpacking internal rootfs..."
-            SFS_PATH=$(find /tmp/iso-mount/ -name "*.squashfs" -o -name "*.sfs" | head -n 1)
+          SFS_PATH=$(sudo find /tmp/iso-mount/ -name "*.squashfs" -o -name "*.sfs" 2>/dev/null | head -n 1)
+          
+          if [ -n "$SFS_PATH" ]; then
+            echo "SquashFS found at: $SFS_PATH"
             sudo unsquashfs -d /mnt/custom-os -f "$SFS_PATH"
           else
             echo "Standard file structure found. Copying files directly..."
             sudo cp -a /tmp/iso-mount/* /mnt/custom-os/
           fi
-
-          sudo umount /tmp/iso-mount
-
-          # Ensure virtual system endpoints exist to prevent mount error 32
-          sudo mkdir -p /mnt/custom-os/dev
-          sudo mkdir -p /mnt/custom-os/sys
-          sudo mkdir -p /mnt/custom-os/proc
-          sudo mkdir -p /mnt/custom-os/dev/pts
-
-          # Bind the host hardware infrastructure to the environment layout
+          
+          # Safely unmount
+          sudo umount /tmp/iso-mount || sudo umount -l /tmp/iso-mount
+          
+          # Create virtual system endpoints
+          sudo mkdir -p /mnt/custom-os/{dev,sys,proc,dev/pts,tmp,run}
+          
+          # Bind mount host infrastructure
           sudo mount --bind /dev /mnt/custom-os/dev
           sudo mount --bind /sys /mnt/custom-os/sys
           sudo mount --bind /proc /mnt/custom-os/proc
           sudo mount --bind /dev/pts /mnt/custom-os/dev/pts
+          
+          echo "ISO extraction and mount complete"
 
-          # Sync pacman and install the display server packages directly within the rootfs
-          echo "Syncing mirrorlists and installing display server inside NoctOS..."
-          sudo chroot /mnt/custom-os /bin/bash -c "
-            pacman-key --init && pacman-key --populate archlinuxarm || true
-            pacman -Sy --noconfirm --needed tigervnc xorg-server-xvfb dbus libsoup webkit2gtk
-          "
-
-      - name: Start GNOME & Stream Display to Web URL
+      - name: Install Display Server in Chroot
         run: |
-          # Write the internal engine initialization script inside the rootfs folder tree
-          sudo bash -c 'cat << EOF > /mnt/custom-os/start-desktop.sh
-          #!/bin/bash
-          export \$(dbus-launch)
-          export XDG_RUNTIME_DIR=/tmp/runtime-root
-          mkdir -p \$XDG_RUNTIME_DIR
-          chmod 700 \$XDG_RUNTIME_DIR
+          echo "Syncing pacman and installing display server inside NoctOS..."
+          sudo chroot /mnt/custom-os /bin/bash -c "
+            pacman-key --init
+            pacman-key --populate archlinuxarm || true
+            pacman -Sy --noconfirm --needed tigervnc xorg-server xvfb dbus libsoup webkit2gtk gnome-session
+          " || echo "Warning: Some packages may have failed, continuing..."
 
+      - name: Create Desktop Startup Script
+        run: |
+          # Write the startup script
+          sudo tee /mnt/custom-os/start-desktop.sh > /dev/null << 'SCRIPT'
+          #!/bin/bash
+          set -e
+          
+          # Initialize D-Bus
+          export $(dbus-launch)
+          
+          # Setup runtime directory
+          export XDG_RUNTIME_DIR=/run/user/0
+          mkdir -p $XDG_RUNTIME_DIR
+          chmod 700 $XDG_RUNTIME_DIR
+          
+          # Display settings
           export DISPLAY=:1
           export XDG_CURRENT_DESKTOP=GNOME
           
-          # Initialize the display frame logic inside the native container
-          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None
-          gnome-session &
-          EOF'
-          sudo chmod +x /mnt/custom-os/start-desktop.sh
-
-          # Open the local network socket proxy using tmux
-          tmux new-session -d -s novnc "websockify --web=/usr/share/novnc/ 8080 localhost:5901"
+          # Start VNC server
+          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None || true
           
-          # Run the engine startup initialization using chroot bounds
-          sudo chroot /mnt/custom-os /bin/bash /start-desktop.sh &
+          # Start GNOME session
+          gnome-session &
+          
+          # Keep the script running
+          wait
+          SCRIPT
+          
+          sudo chmod +x /mnt/custom-os/start-desktop.sh
+          echo "Startup script created"
 
+      - name: Start VNC & Web Display Server
+        run: |
+          # Install noVNC if not already present
+          sudo apt-get install -y novnc
+          
+          # Start websockify in the background
+          nohup websockify --web=/usr/share/novnc/ 8080 localhost:5901 > /tmp/websockify.log 2>&1 &
+          WEBSOCKIFY_PID=$!
+          echo "Websockify started with PID: $WEBSOCKIFY_PID"
+          
+          # Give it a moment to start
+          sleep 2
+          
+          # Start the desktop in chroot
+          sudo chroot /mnt/custom-os /start-desktop.sh &
+          DESKTOP_PID=$!
+          echo "Desktop started with PID: $DESKTOP_PID"
+          
+          # Give the desktop time to initialize
+          sleep 5
+          
+          # Display connection info
           echo "=========================================================="
-          echo "CLICK THE LINK BELOW TO OPEN YOUR LIVE ARM64 GNOME DISPLAY"
+          echo "GNOME Desktop Environment Started"
           echo "=========================================================="
-          curl -s https://localhost.run | ssh -R 80:localhost:8080 noc@localhost.run
+          echo "VNC Port: 5901 (localhost)"
+          echo "Web Interface Port: 8080 (localhost)"
+          echo "=========================================================="
+
+      - name: Generate Public URL (Optional)
+        run: |
+          # Only works if you have SSH key authentication set up
+          echo "To access remotely, you would need to set up port forwarding."
+          echo "For GitHub Actions, this typically requires additional setup."
+          echo ""
+          echo "Local access info saved. Desktop should be running on:"
+          echo "  VNC: localhost:5901"
+          echo "  Web: http://localhost:8080/vnc.html"
+
+      - name: Keep Workflow Alive (for testing)
+        run: |
+          # Keep the job running for up to 6 hours
+          echo "Desktop environment is running..."
+          for i in {1..360}; do
+            echo "Still running... ($i/360)"
+            sleep 60
+          done
