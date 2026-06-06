@@ -1,3 +1,26 @@
+name: Test Native ARM64 GNOME OS from Google Drive ISO
+
+on: [push, workflow_dispatch]
+
+jobs:
+  launch-desktop:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Install gdown & Pull ISO from Google Drive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip curl
+          
+          pip3 install gdown --break-system-packages
+          
+          mkdir -p "$GITHUB_WORKSPACE/iso-data"
+          
+          echo "Downloading NoctOS aarch64 ISO..."
+          gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" \
+                -O "$GITHUB_WORKSPACE/iso-data/noctos-aarch64.iso"
+          
+          ls -lh "$GITHUB_WORKSPACE/iso-data/"
+
       - name: Extract Custom ISO & Mount Native Layout
         run: |
           sudo apt-get install -y tmux tigervnc-standalone-server novnc dbus-x11 squashfs-tools
@@ -5,36 +28,21 @@
           mkdir -p /tmp/iso-mount "$GITHUB_WORKSPACE/custom-os"
           
           echo "Mounting ISO..."
-          sudo mount -o loop "$GITHUB_WORKSPACE/iso-data/noctos-aarch64.iso" /tmp/iso-mount
+          sudo mount -o loop "$GITHUB_WORKSPACE/iso-data/noctos-aarch64.iso" /tmp/iso-mount || { echo "Mount failed!"; exit 1; }
           
-          echo "=== Full ISO Structure ==="
+          echo "=== FULL ISO STRUCTURE ==="
           sudo ls -la /tmp/iso-mount/
           echo "--------------------------------"
-          sudo find /tmp/iso-mount -maxdepth 4 -type f | head -30 || true
+          sudo find /tmp/iso-mount -maxdepth 5 -type f | head -30 || true
+          echo "--------------------------------"
           
-          # Try common Arch / pacstrap locations
-          SFS_PATH=$(sudo find /tmp/iso-mount -type f \( -name "airootfs.sfs" -o -name "*.squashfs" -o -name "*.sfs" \) 2>/dev/null | head -n 1)
-          
-          if [ -n "$SFS_PATH" ]; then
-            echo "✅ Found SquashFS: $SFS_PATH"
-            sudo unsquashfs -d "$GITHUB_WORKSPACE/custom-os" -f "$SFS_PATH"
-          elif [ -d "/tmp/iso-mount/airootfs" ]; then
-            echo "✅ Found airootfs directory (pacstrap style)"
-            sudo cp -a /tmp/iso-mount/airootfs/* "$GITHUB_WORKSPACE/custom-os/" 2>/dev/null || true
-            sudo cp -a /tmp/iso-mount/airootfs/. "$GITHUB_WORKSPACE/custom-os/" 2>/dev/null || true
+          # For pacstrap-built Arch ISO
+          if sudo test -d "/tmp/iso-mount/airootfs"; then
+            echo "✅ Found airootfs directory"
+            sudo cp -a /tmp/iso-mount/airootfs/. "$GITHUB_WORKSPACE/custom-os/" || true
+          elif sudo test -f "/tmp/iso-mount/airootfs.sfs"; then
+            echo "✅ Found airootfs.sfs"
+            sudo unsquashfs -d "$GITHUB_WORKSPACE/custom-os" -f "/tmp/iso-mount/airootfs.sfs"
           else
-            echo "⚠️ No airootfs or squashfs found. Copying everything..."
-            sudo cp -a /tmp/iso-mount/* "$GITHUB_WORKSPACE/custom-os/" 2>/dev/null || true
-          fi
-          
-          sudo umount /tmp/iso-mount || true
-          
-          echo "Extracted size:"
-          sudo du -sh "$GITHUB_WORKSPACE/custom-os" || true
-          
-          # Bind system directories
-          sudo mount --bind /dev "$GITHUB_WORKSPACE/custom-os/dev" 2>/dev/null || true
-          sudo mount --bind /sys "$GITHUB_WORKSPACE/custom-os/sys" 2>/dev/null || true
-          sudo mount --bind /proc "$GITHUB_WORKSPACE/custom-os/proc" 2>/dev/null || true
-          sudo mount --bind /dev/pts "$GITHUB_WORKSPACE/custom-os/dev/pts" 2>/dev/null || true
-          sudo mount --bind /run "$GITHUB_WORKSPACE/custom-os/run" 2>/dev/null || true
+            echo "⚠️ Falling back to full copy"
+            sudo cp -a /tmp/iso-mount/. "$GITHUB_WORKSPACE/custom
