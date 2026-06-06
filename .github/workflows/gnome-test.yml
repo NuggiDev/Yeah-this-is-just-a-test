@@ -10,17 +10,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-pip
-          pip3 install gdown --break-system-packages
-          mkdir -p /mnt/iso-data
-          gdown --id "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso
+          
+          # Install gdown system-wide with sudo
+          sudo pip3 install gdown --break-system-packages
+          
+          # Create data directory using sudo
+          sudo mkdir -p /mnt/iso-data
+          
+          # Download NoctOS directly into the secure directory using sudo
+          sudo gdown --id "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso
 
       - name: Extract Custom ISO & Mount Native Layout
         run: |
           # Install tools on the host system
           sudo apt-get install -y tmux novnc squashfs-tools
 
-          mkdir -p /tmp/iso-mount
-          mkdir -p /mnt/custom-os
+          sudo mkdir -p /tmp/iso-mount
+          sudo mkdir -p /mnt/custom-os
           
           sudo mount -o loop /mnt/iso-data/noctos-aarch64.iso /tmp/iso-mount
 
@@ -41,9 +47,7 @@ jobs:
           sudo mount --bind /proc /mnt/custom-os/proc
           sudo mount --bind /dev/pts /mnt/custom-os/dev/pts
 
-          # =================================================================
-          # CRITICAL FIX: Install TigerVNC and dependencies INSIDE NoctOS
-          # =================================================================
+          # Sync mirrorlists and install display server inside NoctOS
           echo "Syncing mirrorlists and installing display server inside NoctOS..."
           sudo chroot /mnt/custom-os /bin/bash -c "
             pacman-key --init && pacman-key --populate archlinuxarm || true
@@ -63,7 +67,6 @@ jobs:
           export DISPLAY=:1
           export XDG_CURRENT_DESKTOP=GNOME
           
-          # This will now execute successfully because tigervnc is installed inside the chroot
           vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None
           gnome-session &
           EOF'
