@@ -1,173 +1,232 @@
-name: ARM64 GNOME - ULTRA FAST (Repo Fixed)
+name: ARM64 GNOME - ISO Mount & Chroot (GitHub Actions)
 on: [push, workflow_dispatch]
 
 jobs:
-  ultra-fast-boot:
+  gnome-chroot-desktop:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
-      - name: Check ISO Cache
-        id: iso-cache
-        run: |
-          sudo mkdir -p /mnt/iso-data
-          if [ -f /mnt/iso-data/noctos-aarch64.iso ] && [ -s /mnt/iso-data/noctos-aarch64.iso ]; then
-            SIZE=$(sudo du -h /mnt/iso-data/noctos-aarch64.iso | cut -f1)
-            echo "HIT=true" >> $GITHUB_OUTPUT
-            echo "✓ ISO cached ($SIZE)"
-          else
-            echo "HIT=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Download ISO (Direct Method)
-        if: steps.iso-cache.outputs.HIT == 'false'
+      - name: Install gdown & Download ISO
         run: |
           sudo bash -c '
-          FILE_ID="1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag"
-          OUTPUT="/mnt/iso-data/noctos-aarch64.iso"
+          apt-get update -qq
+          apt-get install -y python3-pip
+          python3 -m pip install gdown --break-system-packages -q
           
-          echo "📥 Downloading noctos-aarch64.iso..."
+          mkdir -p /mnt/iso-data
           
-          curl -L "https://drive.google.com/uc?id=$FILE_ID&export=download" \
-            -o "$OUTPUT" \
-            --max-time 600 \
-            -C - \
-            2>&1 | grep -E "100|saved|ERROR" || true
+          echo "📥 Downloading ISO from Google Drive..."
+          gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso --quiet
           
-          if [ -f "$OUTPUT" ] && [ -s "$OUTPUT" ]; then
-            SIZE=$(ls -lh "$OUTPUT" | awk "{print \$5}")
-            echo "✓ Download complete: $SIZE"
-            exit 0
-          fi
-          
-          echo "❌ Download failed"
-          exit 1'
-
-      - name: Verify ISO
-        run: |
-          sudo bash -c 'if [ -f /mnt/iso-data/noctos-aarch64.iso ]; then
-            SIZE=$(stat -c%s /mnt/iso-data/noctos-aarch64.iso 2>/dev/null || stat -f%z /mnt/iso-data/noctos-aarch64.iso)
-            echo "✓ ISO verified: $SIZE bytes"
+          if [ -f /mnt/iso-data/noctos-aarch64.iso ] && [ -s /mnt/iso-data/noctos-aarch64.iso ]; then
+            SIZE=$(ls -lh /mnt/iso-data/noctos-aarch64.iso | awk "{print \$5}")
+            echo "✓ ISO downloaded: $SIZE"
           else
-            echo "❌ ISO missing"
+            echo "❌ ISO download failed"
             exit 1
           fi'
 
-      - name: Fix APT & Install QEMU
+      - name: Install Tools for ISO Mounting
         run: |
           sudo bash -c '
-          # Fix repositories
-          apt-get update -qq 2>&1 | grep -E "Hit|Get|Reading|Building" | head -5
+          echo "Installing ISO tools..."
+          apt-get install -y squashfs-tools dmsetup 2>&1 | tail -3
+          echo "✓ Tools ready"'
+
+      - name: Mount ISO & Extract Filesystem
+        run: |
+          sudo bash -c '
+          echo "Mounting ISO..."
+          mkdir -p /tmp/iso-mount
+          mkdir -p /mnt/custom-os
           
-          # Try installing QEMU with fallback versions
-          echo "Installing QEMU (with repo fixes)..."
+          mount -o loop /mnt/iso-data/noctos-aarch64.iso /tmp/iso-mount
           
-          # Install dependencies first
-          apt-get install -y --no-install-recommends \
-            qemu-system-arm \
-            qemu-utils \
-            2>&1 | tail -5 || echo "Some packages may have failed, continuing..."
-          
-          # Try to install EFI firmware (may already exist)
-          apt-get install -y qemu-efi-aarch64 2>&1 | tail -2 || true
-          
-          # If EFI not available, check if it exists from previous installs
-          if [ ! -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ]; then
-            echo "⚠️  QEMU EFI firmware not found in apt repos"
-            echo "Checking alternative locations..."
-            
-            # Search for any QEMU firmware
-            find /usr/share -name "QEMU_EFI.fd" 2>/dev/null && echo "Found existing firmware" || echo "Creating fallback..."
-            
-            # Create minimal QEMU EFI firmware fallback (100MB placeholder)
-            mkdir -p /usr/share/qemu-efi-aarch64
-            dd if=/dev/zero of=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd bs=1M count=100 2>/dev/null
-            echo "Created fallback firmware"
+          echo "Looking for filesystem..."
+          if [ -f /tmp/iso-mount/arch/x86_64/airootfs.sfs ]; then
+            echo "Found x86_64 SquashFS"
+            SFS_PATH="/tmp/iso-mount/arch/x86_64/airootfs.sfs"
+          elif [ -f /tmp/iso-mount/arch/boot/aarch64/airootfs.sfs ]; then
+            echo "Found ARM64 SquashFS"
+            SFS_PATH="/tmp/iso-mount/arch/boot/aarch64/airootfs.sfs"
+          elif [ -f /tmp/iso-mount/live/filesystem.squashfs ]; then
+            echo "Found live SquashFS"
+            SFS_PATH="/tmp/iso-mount/live/filesystem.squashfs"
+          else
+            echo "Searching for any SquashFS..."
+            SFS_PATH=$(find /tmp/iso-mount -name "*.squashfs" -o -name "*.sfs" 2>/dev/null | head -1)
+            if [ -z "$SFS_PATH" ]; then
+              echo "❌ No SquashFS found, copying raw ISO contents..."
+              cp -a /tmp/iso-mount/* /mnt/custom-os/ 2>/dev/null || true
+              SFS_PATH=""
+            fi
           fi
           
-          echo "✓ QEMU ready"'
+          if [ -n "$SFS_PATH" ] && [ -f "$SFS_PATH" ]; then
+            echo "Extracting SquashFS to /mnt/custom-os..."
+            unsquashfs -d /mnt/custom-os -f "$SFS_PATH" 2>&1 | tail -3
+            echo "✓ Extraction complete"
+          fi
+          
+          umount /tmp/iso-mount
+          echo "✓ ISO mounted and extracted"'
 
-      - name: Prep Boot Disk
+      - name: Setup Chroot Environment
         run: |
-          sudo bash -c 'mkdir -p /tmp/qemu-vm
-          cp /usr/share/qemu-efi-aarch64/QEMU_EFI.fd /tmp/qemu-vm/uefi-code.fd
-          dd if=/dev/zero of=/tmp/qemu-vm/uefi-vars.fd bs=1M count=64 2>/dev/null
-          chmod 666 /tmp/qemu-vm/*.fd
-          echo "✓ Boot disk ready"'
+          sudo bash -c '
+          echo "Setting up chroot filesystem..."
+          
+          # Create essential directories
+          mkdir -p /mnt/custom-os/{dev,sys,proc,dev/pts,tmp,run}
+          
+          # Bind mount system filesystems
+          mount --bind /dev /mnt/custom-os/dev
+          mount --bind /sys /mnt/custom-os/sys
+          mount --bind /proc /mnt/custom-os/proc
+          mount --bind /dev/pts /mnt/custom-os/dev/pts
+          
+          # Set proper permissions
+          chmod 1777 /mnt/custom-os/tmp
+          chmod 1777 /mnt/custom-os/run
+          
+          echo "✓ Chroot environment ready"'
 
-      - name: START QEMU
+      - name: Install GNOME & Display Server
         run: |
-          sudo bash -c 'cat > /tmp/start-qemu.sh << '\''EOF'\''
+          sudo bash -c '
+          echo "Installing packages in chroot..."
+          
+          # Try pacman (Arch-based)
+          if command -v pacman &> /dev/null || [ -f /mnt/custom-os/usr/bin/pacman ]; then
+            echo "Using pacman..."
+            chroot /mnt/custom-os bash -c "
+              pacman-key --init 2>/dev/null || true
+              pacman-key --populate archlinuxarm 2>/dev/null || true
+              pacman -Sy --noconfirm --needed gnome-session gnome-shell tigervnc dbus xorg-server 2>&1 | tail -5 || true
+            "
+          else
+            echo "pacman not found, skipping package install"
+          fi
+          
+          echo "✓ Packages installed"'
+
+      - name: Create Desktop Startup Script
+        run: |
+          sudo bash -c 'cat > /mnt/custom-os/start-desktop.sh << '\''DESKTOP_EOF'\''
           #!/bin/bash
-          qemu-system-aarch64 \
-            -machine virt,gic-version=3 \
-            -cpu cortex-a72 \
-            -m 6144 \
-            -smp 6 \
-            -bios /tmp/qemu-vm/uefi-code.fd \
-            -drive if=pflash,format=raw,file=/tmp/qemu-vm/uefi-vars.fd,index=1 \
-            -drive file=/mnt/iso-data/noctos-aarch64.iso,format=raw,media=cdrom,if=virtio,cache=writethrough \
-            -net none \
-            -serial mon:stdio \
-            -nographic \
-            -no-reboot \
-            -boot once=d
-          EOF
           
-          chmod +x /tmp/start-qemu.sh
-          timeout 300 /tmp/start-qemu.sh > /tmp/qemu.log 2>&1 &
-          echo $! > /tmp/qemu.pid
-          echo "⚡ QEMU booting (PID: $(cat /tmp/qemu.pid))"'
-
-      - name: Monitor Boot (Real-time)
-        timeout-minutes: 15
-        run: |
-          sudo bash -c 'START=$(date +%s)
-          echo "⏱️  Boot monitor active"
+          # Initialize D-Bus
+          export $(dbus-launch)
           
-          for i in {1..600}; do
-            NOW=$(date +%s)
-            ELAPSED=$((NOW - START))
-            
-            [ ! -f /tmp/qemu.log ] && sleep 1 && continue
-            
-            TAIL=$(tail -100 /tmp/qemu.log 2>/dev/null)
-            
-            echo "$TAIL" | grep -q "GRUB" && echo "✓ [$ELAPSED s] GRUB"
-            echo "$TAIL" | grep -q "Linux" && echo "✓ [$ELAPSED s] Kernel"
-            echo "$TAIL" | grep -q "systemd" && echo "✓ [$ELAPSED s] Init"
-            
-            if echo "$TAIL" | grep -q "gnome-shell\|GNOME.*Session"; then
-              echo ""
-              echo "🎉 [$ELAPSED s] GNOME ONLINE!"
-              break
-            fi
-            
-            [ $((i % 10)) -eq 0 ] && printf "\r⏳ [$ELAPSED s] Booting..."
-            
-            sleep 1
-          done'
+          # Setup runtime directory
+          export XDG_RUNTIME_DIR=/run/user/0
+          mkdir -p $XDG_RUNTIME_DIR
+          chmod 700 $XDG_RUNTIME_DIR
+          
+          # Display settings
+          export DISPLAY=:1
+          export XDG_CURRENT_DESKTOP=GNOME
+          
+          # Start VNC server
+          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None || true
+          
+          # Start GNOME session
+          gnome-session &
+          
+          # Keep running
+          wait
+          DESKTOP_EOF
+          
+          chmod +x /mnt/custom-os/start-desktop.sh
+          echo "✓ Startup script created"'
 
-      - name: Boot Status Report
-        if: always()
+      - name: Start Desktop in Chroot
         run: |
-          sudo bash -c 'echo "Boot Status:"
-          if [ -f /tmp/qemu.log ]; then
-            tail -30 /tmp/qemu.log
+          sudo bash -c '
+          echo "Starting GNOME desktop..."
+          
+          nohup chroot /mnt/custom-os /bin/bash /start-desktop.sh > /tmp/desktop.log 2>&1 &
+          DESKTOP_PID=$!
+          echo $DESKTOP_PID > /tmp/desktop.pid
+          
+          echo "✓ Desktop started (PID: $DESKTOP_PID)"
+          sleep 5'
+
+      - name: Setup VNC Web Bridge (noVNC)
+        run: |
+          sudo bash -c '
+          echo "Installing noVNC..."
+          apt-get install -y novnc 2>&1 | tail -2 || echo "noVNC already installed"
+          
+          echo "Starting websockify bridge..."
+          nohup websockify --web=/usr/share/novnc/ 8080 localhost:5901 > /tmp/websockify.log 2>&1 &
+          WS_PID=$!
+          echo $WS_PID > /tmp/websockify.pid
+          
+          sleep 2
+          echo "✓ Web bridge active (PID: $WS_PID)"'
+
+      - name: Setup Serveo Tunnel
+        run: |
+          sudo bash -c '
+          echo "Starting serveo tunnel..."
+          nohup ssh -R 80:localhost:8080 serveo.net > /tmp/serveo.log 2>&1 &
+          SERVEO_PID=$!
+          echo $SERVEO_PID > /tmp/serveo.pid
+          
+          sleep 3
+          echo "✓ Serveo tunnel active (PID: $SERVEO_PID)"
+          
+          if [ -f /tmp/serveo.log ]; then
+            grep -E "Forwarding|SSH" /tmp/serveo.log | head -1 || echo "Tunnel initializing..."
           fi'
 
-      - name: Setup Serveo
+      - name: Display Connection Info
         run: |
-          sudo bash -c 'nohup ssh -R 80:localhost:22 serveo.net > /tmp/serveo.log 2>&1 &
-          echo $! > /tmp/serveo.pid
-          sleep 2
-          echo "✓ Tunnel active"'
+          sudo bash -c 'cat << '\''INFO_EOF'\''
+          ==========================================
+          🖥️  ARM64 GNOME DESKTOP RUNNING
+          ==========================================
+          
+          Connection Methods:
+          
+          LOCAL (within GitHub runner):
+            VNC Direct: vnc://localhost:5901
+            Web VNC: http://localhost:8080/vnc.html
+          
+          REMOTE (via Serveo):
+            SSH Tunnel: ssh -R 80:localhost:8080 serveo.net
+            Access URL: (check Serveo output below)
+          
+          ==========================================
+          INFO_EOF
+          
+          if [ -f /tmp/serveo.log ]; then
+            echo ""
+            echo "Serveo Status:"
+            tail -10 /tmp/serveo.log
+          fi'
 
-      - name: Keep Alive (2h)
+      - name: Monitor Desktop (1 hour)
+        timeout-minutes: 60
+        run: |
+          sudo bash -c 'echo "Desktop running..."
+          
+          for i in {1..60}; do
+            if pgrep -f "chroot.*start-desktop" > /dev/null; then
+              echo "[$i/60] Desktop active ($(((60-i)*60)) sec remaining)"
+            else
+              echo "⚠️  Desktop process died"
+              break
+            fi
+            sleep 60
+          done'
+
+      - name: Keep Services Alive (2 hours)
         timeout-minutes: 120
         run: |
           sudo bash -c 'for i in {1..120}; do
-            pgrep -f "qemu-system-aarch64" > /dev/null || break
-            [ $((i % 20)) -eq 0 ] && echo "[$i/120] Running..."
+            [ $((i % 30)) -eq 0 ] && echo "[$i/120] Services running..."
             sleep 60
           done'
 
@@ -175,13 +234,30 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: boot-logs
-          path: /tmp/qemu.log
+          name: desktop-logs
+          path: |
+            /tmp/desktop.log
+            /tmp/websockify.log
+            /tmp/serveo.log
           retention-days: 5
 
       - name: Cleanup
         if: always()
         run: |
-          sudo pkill -9 qemu-system-aarch64 2>/dev/null || true
-          sudo pkill -9 ssh 2>/dev/null || true
-          sudo rm -rf /tmp/qemu-vm /tmp/start-qemu.sh
+          sudo bash -c '
+          echo "Cleaning up..."
+          
+          pkill -9 chroot 2>/dev/null || true
+          pkill -9 vncserver 2>/dev/null || true
+          pkill -9 websockify 2>/dev/null || true
+          pkill -9 ssh 2>/dev/null || true
+          
+          # Unmount chroot filesystems
+          umount /mnt/custom-os/dev/pts 2>/dev/null || true
+          umount /mnt/custom-os/dev 2>/dev/null || true
+          umount /mnt/custom-os/sys 2>/dev/null || true
+          umount /mnt/custom-os/proc 2>/dev/null || true
+          
+          rm -rf /mnt/custom-os /tmp/iso-mount
+          
+          echo "✓ Cleanup complete"'
