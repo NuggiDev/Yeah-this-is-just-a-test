@@ -13,11 +13,10 @@ jobs:
           
           pip3 install gdown --break-system-packages
           
-          # Use GitHub workspace (always writable)
           mkdir -p "$GITHUB_WORKSPACE/iso-data"
           
-          echo "Downloading NoctOS aarch64 ISO..."
-          gdown --id "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" \
+          echo "Downloading NoctOS aarch64 ISO (this may take a while)..."
+          gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" \
                 -O "$GITHUB_WORKSPACE/iso-data/noctos-aarch64.iso"
           
           ls -lh "$GITHUB_WORKSPACE/iso-data/"
@@ -31,7 +30,6 @@ jobs:
           echo "Mounting ISO..."
           sudo mount -o loop "$GITHUB_WORKSPACE/iso-data/noctos-aarch64.iso" /tmp/iso-mount
           
-          # Detect and extract rootfs
           if find /tmp/iso-mount -name "*.squashfs" -o -name "*.sfs" | head -n 1 > /dev/null; then
             echo "SquashFS found! Unpacking..."
             SFS_PATH=$(find /tmp/iso-mount -name "*.squashfs" -o -name "*.sfs" | head -n 1)
@@ -43,7 +41,7 @@ jobs:
           
           sudo umount /tmp/iso-mount
           
-          # Bind mounts for chroot
+          # Bind mounts
           sudo mount --bind /dev "$GITHUB_WORKSPACE/custom-os/dev"
           sudo mount --bind /sys "$GITHUB_WORKSPACE/custom-os/sys"
           sudo mount --bind /proc "$GITHUB_WORKSPACE/custom-os/proc"
@@ -52,57 +50,51 @@ jobs:
 
       - name: Start GNOME & Stream Display
         run: |
-          # Create desktop startup script
           sudo bash -c 'cat << "EOF" > '"$GITHUB_WORKSPACE"'/custom-os/start-desktop.sh
           #!/bin/bash
           set -e
           
           export XDG_RUNTIME_DIR=/tmp/runtime-root
-          mkdir -p $XDG_RUNTIME_DIR
-          chmod 700 $XDG_RUNTIME_DIR
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
           
           export DISPLAY=:1
           export XDG_CURRENT_DESKTOP=GNOME
-          export DBUS_SESSION_BUS_ADDRESS=$(dbus-launch --sh-syntax | grep DBUS_SESSION_BUS_ADDRESS | cut -d= -f2)
           
-          echo "Starting TigerVNC server..."
+          dbus-launch --sh-syntax > /tmp/dbus.env
+          export $(cat /tmp/dbus.env | xargs)
+          
+          echo "Starting VNC server..."
           vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None -localhost no
           
-          echo "Starting GNOME session..."
+          echo "Starting GNOME..."
           gnome-session --session=gnome &
           
-          echo "Desktop environment started."
+          echo "Desktop started."
           wait
           EOF'
           
           sudo chmod +x "$GITHUB_WORKSPACE/custom-os/start-desktop.sh"
           
-          # Start noVNC websockify
-          tmux new-session -d -s novnc \
-            "websockify --web=/usr/share/novnc/ 8080 localhost:5901"
+          # Start noVNC
+          tmux new-session -d -s novnc "websockify --web=/usr/share/novnc/ 8080 localhost:5901"
           
-          echo "Starting desktop in chroot..."
+          echo "Launching desktop in chroot..."
           sudo chroot "$GITHUB_WORKSPACE/custom-os" /bin/bash /start-desktop.sh &
           
-          sleep 8  # Give services time to start
+          sleep 10
           
           echo "=========================================================="
           echo "          LIVE ARM64 GNOME DESKTOP"
           echo "=========================================================="
           
-          # === Public tunnel using localhost.run ===
-          echo "Creating public tunnel with localhost.run..."
+          echo "Creating public tunnel..."
           ssh -o StrictHostKeyChecking=no -R 80:localhost:8080 noc@ssh.localhost.run &
-          TUNNEL_PID=$!
-          
-          echo "Waiting for tunnel to establish..."
-          sleep 6
           
           echo ""
-          echo "✅ Your live desktop should be available at:"
-          echo "   https://noc.ssh.localhost.run"
+          echo "Your desktop should be available soon at:"
+          echo "→ https://noc.ssh.localhost.run"
           echo ""
-          echo "Keep this workflow running to maintain the session."
+          echo "Keep this workflow running!"
           
-          # Keep workflow alive
           tail -f /dev/null
