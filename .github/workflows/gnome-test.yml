@@ -1,0 +1,77 @@
+name: Test Native ARM64 GNOME OS from Google Drive ISO
+on: [push, workflow_dispatch]
+
+jobs:
+  launch-desktop:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Install gdown & Pull ISO from Google Drive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          
+          # Install the tool to bypass the Google Drive large file warning screen
+          pip3 install gdown --break-system-packages
+          
+          mkdir -p /mnt/iso-data
+          
+          # Injected your exact Google Drive File ID for noctos-aarch64.iso
+          gdown --id "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso
+
+      - name: Extract Custom ISO & Mount Native Layout
+        run: |
+          sudo apt-get install -y tmux tigervnc-standalone-server novnc dbus-x11 squashfs-tools
+
+          mkdir -p /tmp/iso-mount
+          mkdir -p /mnt/custom-os
+          
+          # Mount the 5GB file pulled from your Drive
+          sudo mount -o loop /mnt/iso-data/noctos-aarch64.iso /tmp/iso-mount
+
+          # Dynamically look for the underlying filesystem layout inside NoctOS
+          if [ -f /tmp/iso-mount/arch/x86_64/airootfs.sfs ] || [ -f /tmp/iso-mount/arch/boot/aarch64/airootfs.sfs ] || [ -f /tmp/iso-mount/live/filesystem.squashfs ]; then
+            echo "SquashFS found! Unpacking internal rootfs..."
+            SFS_PATH=$(find /tmp/iso-mount/ -name "*.squashfs" -o -name "*.sfs" | head -n 1)
+            sudo unsquashfs -d /mnt/custom-os -f "$SFS_PATH"
+          else
+            echo "Standard file structure found. Copying files directly..."
+            sudo cp -a /tmp/iso-mount/* /mnt/custom-os/
+          fi
+
+          sudo umount /tmp/iso-mount
+
+          # Bind the system paths natively to the ARM64 server core
+          sudo mount --bind /dev /mnt/custom-os/dev
+          sudo mount --bind /sys /mnt/custom-os/sys
+          sudo mount --bind /proc /mnt/custom-os/proc
+          sudo mount --bind /dev/pts /mnt/custom-os/dev/pts
+
+      - name: Start GNOME & Stream Display to Web URL
+        run: |
+          # Create the isolated display startup environment script
+          sudo bash -c 'cat << EOF > /mnt/custom-os/start-desktop.sh
+          #!/bin/bash
+          export \$(dbus-launch)
+          export XDG_RUNTIME_DIR=/tmp/runtime-root
+          mkdir -p \$XDG_RUNTIME_DIR
+          chmod 700 \$XDG_RUNTIME_DIR
+
+          export DISPLAY=:1
+          export XDG_CURRENT_DESKTOP=GNOME
+          
+          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None
+          gnome-session &
+          EOF'
+          sudo chmod +x /mnt/custom-os/start-desktop.sh
+
+          # Launch the proxy to pipe the desktop signals to a web browser port
+          tmux new-session -d -s novnc "websockify --web=/usr/share/novnc/ 8080 localhost:5901"
+          
+          # Run the script inside the chroot
+          sudo chroot /mnt/custom-os /bin/bash /start-desktop.sh &
+
+          echo "=========================================================="
+          echo "CLICK THE LINK BELOW TO OPEN YOUR LIVE ARM64 GNOME DISPLAY"
+          echo "=========================================================="
+          curl -s https://localhost.run | ssh -R 80:localhost:8080 noc@localhost.run
