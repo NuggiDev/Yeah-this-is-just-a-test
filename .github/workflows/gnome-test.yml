@@ -11,18 +11,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3-pip
           
-          # Install gdown system-wide with sudo
           sudo pip3 install gdown --break-system-packages
-          
-          # Create data directory using sudo
           sudo mkdir -p /mnt/iso-data
           
-          # Download NoctOS directly into the secure directory using sudo
-          sudo gdown --id "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso
+          # Fixed syntax for gdown 6.x
+          sudo gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso
 
       - name: Extract Custom ISO & Mount Native Layout
         run: |
-          # Install tools on the host system
           sudo apt-get install -y tmux novnc squashfs-tools
 
           sudo mkdir -p /tmp/iso-mount
