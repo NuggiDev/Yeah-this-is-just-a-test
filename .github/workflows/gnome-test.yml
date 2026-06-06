@@ -33,10 +33,7 @@ jobs:
           echo "=== FULL ISO STRUCTURE ==="
           sudo ls -la /tmp/iso-mount/
           echo "--------------------------------"
-          sudo find /tmp/iso-mount -maxdepth 4 -type f | head -20 || true
-          echo "--------------------------------"
           
-          # Copy from airootfs (your pacstrap build)
           if [ -d "/tmp/iso-mount/airootfs" ]; then
             echo "✅ Found airootfs directory - copying rootfs..."
             sudo cp -a /tmp/iso-mount/airootfs/. "$GITHUB_WORKSPACE/custom-os/" || true
@@ -58,6 +55,11 @@ jobs:
 
       - name: Start GNOME & Stream Display
         run: |
+          echo "Installing VNC tools inside the chroot..."
+          sudo chroot "$GITHUB_WORKSPACE/custom-os" /bin/bash -c '
+            pacman -Sy --noconfirm tigervnc dbus xorg-server xorg-xinit gnome || true
+          ' 2>/dev/null || true
+
           echo "Creating desktop startup script..."
           sudo bash -c 'cat << "EOF" > '"$GITHUB_WORKSPACE"'/custom-os/start-desktop.sh
           #!/bin/bash
@@ -70,41 +72,42 @@ jobs:
           export DISPLAY=:1
           export XDG_CURRENT_DESKTOP=GNOME
 
-          # Start D-Bus
           eval $(dbus-launch --sh-syntax)
 
           echo "Starting TigerVNC server..."
-          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None -localhost no
+          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None -localhost no || \
+          /usr/bin/tigervncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None -localhost no
 
           echo "Starting GNOME session..."
           gnome-session --session=gnome &
 
-          echo "Desktop started. Keeping session alive..."
+          echo "Desktop started."
           tail -f /dev/null
           EOF'
 
           sudo chmod +x "$GITHUB_WORKSPACE/custom-os/start-desktop.sh"
 
-          # Start noVNC
+          # Start noVNC on host
           tmux new-session -d -s novnc "websockify --web=/usr/share/novnc/ 8080 localhost:5901"
 
           echo "Launching desktop in chroot..."
           sudo chroot "$GITHUB_WORKSPACE/custom-os" /bin/bash /start-desktop.sh &
 
-          sleep 12
+          sleep 15
 
           echo "=========================================================="
           echo "          LIVE ARM64 GNOME DESKTOP READY"
           echo "=========================================================="
 
-          echo "Creating public tunnel with localhost.run..."
-          ssh -o StrictHostKeyChecking=no -R 80:localhost:8080 noc@ssh.localhost.run &
+          echo "Creating public tunnel..."
+          # Try serveo (more reliable for CI)
+          ssh -o StrictHostKeyChecking=no -R 80:localhost:8080 serveo.net &
 
           echo ""
-          echo "✅ Open this link in your browser:"
-          echo "   https://noc.ssh.localhost.run"
+          echo "✅ Try these links:"
+          echo "   https://noc.serveo.net"
+          echo "   or https://random-subdomain.serveo.net (check workflow log)"
           echo ""
-          echo "Keep this workflow running to keep the desktop alive."
+          echo "Keep workflow running!"
           
-          # Keep workflow alive
           tail -f /dev/null
