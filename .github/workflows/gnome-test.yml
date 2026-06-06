@@ -16,7 +16,7 @@ jobs:
           mkdir -p /mnt/iso-data
           
           echo "📥 Downloading ISO from Google Drive..."
-          gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso --quiet
+          gdown "1BCRA9-imGUNu3T27zw7Gsj_pDKKNwiMB" -O /mnt/iso-data/noctos-aarch64.iso --quiet
           
           if [ -f /mnt/iso-data/noctos-aarch64.iso ] && [ -s /mnt/iso-data/noctos-aarch64.iso ]; then
             SIZE=$(ls -lh /mnt/iso-data/noctos-aarch64.iso | awk "{print \$5}")
