@@ -1,178 +1,196 @@
-name: Test ARM64 GNOME OS with GRUB UEFI Boot + Serveo Tunnel
+name: ARM64 GNOME - ULTRA FAST BOOT (GitHub Actions)
 on: [push, workflow_dispatch]
 
 jobs:
-  uefi-grub-boot-test:
+  ultra-fast-boot:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 180
+    timeout-minutes: 60
     steps:
-      - name: Install gdown & Pull ISO from Google Drive
+      - name: Cache ISO Download
+        id: iso-cache
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y python3-pip
-          sudo pip3 install gdown --break-system-packages -q
-          sudo mkdir -p /mnt/iso-data
-          sudo bash -c 'echo "Downloading ISO from Google Drive..."'
-          sudo gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso --quiet
-          sudo bash -c 'if [ ! -f /mnt/iso-data/noctos-aarch64.iso ]; then echo "ERROR: ISO download failed"; exit 1; fi'
-          sudo bash -c 'ls -lh /mnt/iso-data/noctos-aarch64.iso && echo "✓ ISO downloaded"'
+          sudo bash -c 'mkdir -p /mnt/iso-data'
+          if [ -f /mnt/iso-data/noctos-aarch64.iso ]; then
+            echo "HIT=true" >> $GITHUB_OUTPUT
+            echo "✓ ISO cached, skipping download"
+          else
+            echo "HIT=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Install QEMU and UEFI Tools
+      - name: Quick Install & Download ISO (Parallel)
+        if: steps.iso-cache.outputs.HIT == 'false'
         run: |
-          sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 qemu-utils
-          sudo bash -c 'if [ ! -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ]; then echo "ERROR: ARM64 UEFI firmware not found"; exit 1; fi'
-          sudo bash -c 'echo "✓ QEMU and UEFI firmware installed"'
+          sudo bash -c 'apt-get update -qq &
+          python3 -m pip install gdown --break-system-packages -q 2>/dev/null &
+          wait
+          echo "Downloading ISO..."
+          gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso --quiet 2>&1 || gdown "1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag" -O /mnt/iso-data/noctos-aarch64.iso
+          [ -f /mnt/iso-data/noctos-aarch64.iso ] && echo "✓ ISO ready" || exit 1'
 
-      - name: Create UEFI Boot Environment
+      - name: Install QEMU (Fastest)
         run: |
-          sudo mkdir -p /tmp/qemu-vm
-          sudo cp /usr/share/qemu-efi-aarch64/QEMU_EFI.fd /tmp/qemu-vm/uefi-code.fd
-          sudo dd if=/dev/zero of=/tmp/qemu-vm/uefi-vars.fd bs=1M count=64 2>/dev/null
-          sudo chmod 666 /tmp/qemu-vm/*.fd
-          sudo qemu-img create -f qcow2 /tmp/qemu-vm/system-disk.qcow2 30G
-          sudo bash -c 'echo "✓ UEFI boot environment created"'
+          sudo bash -c 'apt-get install -y qemu-system-arm qemu-efi-aarch64 2>&1 | grep -E "Setting|already|ERROR" || true
+          [ -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ] && echo "✓ QEMU ready"'
 
-      - name: Launch QEMU with ARM64 GRUB Boot
+      - name: Create Boot Disk (No Wait)
         run: |
-          sudo bash -c 'cat > /tmp/start-qemu.sh << '\''EOF'\''
+          sudo bash -c 'mkdir -p /tmp/qemu-vm
+          cp /usr/share/qemu-efi-aarch64/QEMU_EFI.fd /tmp/qemu-vm/uefi-code.fd
+          dd if=/dev/zero of=/tmp/qemu-vm/uefi-vars.fd bs=1M count=64 2>/dev/null
+          chmod 666 /tmp/qemu-vm/*.fd
+          echo "✓ Boot ready"'
+
+      - name: START QEMU (AGGRESSIVE MODE)
+        run: |
+          sudo bash -c 'cat > /tmp/start-qemu.sh << '\''QEMU_EOF'\''
           #!/bin/bash
           qemu-system-aarch64 \
-            -machine virt \
+            -machine virt,gic-version=3 \
             -cpu cortex-a72 \
-            -m 4096 \
-            -smp 4 \
+            -m 6144 \
+            -smp 6 \
             -bios /tmp/qemu-vm/uefi-code.fd \
             -drive if=pflash,format=raw,file=/tmp/qemu-vm/uefi-vars.fd,index=1 \
-            -drive file=/mnt/iso-data/noctos-aarch64.iso,format=raw,media=cdrom,index=2 \
-            -drive file=/tmp/qemu-vm/system-disk.qcow2,format=qcow2,index=0 \
-            -net nic,model=virtio \
-            -net user \
+            -drive file=/mnt/iso-data/noctos-aarch64.iso,format=raw,media=cdrom,if=virtio,cache=writethrough \
+            -net none \
             -serial mon:stdio \
-            -nographic
-          EOF'
-          sudo chmod +x /tmp/start-qemu.sh
-          sudo bash /tmp/start-qemu.sh > /tmp/qemu.log 2>&1 &
-          sudo bash -c 'QEMU_PID=$!; echo $QEMU_PID > /tmp/qemu.pid; echo "✓ QEMU started with PID: $QEMU_PID"'
-          sudo sleep 5
+            -nographic \
+            -no-reboot \
+            -boot once=d \
+            2>&1
+          QEMU_EOF
+          
+          chmod +x /tmp/start-qemu.sh
+          timeout 300 /tmp/start-qemu.sh > /tmp/qemu.log 2>&1 &
+          echo $! > /tmp/qemu.pid
+          echo "⚡ QEMU BOOTING (PID: $(cat /tmp/qemu.pid))"'
+          
+          sudo sleep 1
 
-      - name: Setup Serveo Tunnel
+      - name: FAST BOOT MONITOR (Real-time Detection)
+        timeout-minutes: 15
         run: |
-          sudo bash -c 'echo "Setting up serveo tunnel..."'
-          sudo bash -c 'nohup ssh -R 80:localhost:22 serveo.net > /tmp/serveo.log 2>&1 &'
-          sudo bash -c 'SERVEO_PID=$!; echo $SERVEO_PID > /tmp/serveo.pid; echo "✓ Serveo tunnel initialized (PID: $SERVEO_PID)"'
-          sudo sleep 3
-          sudo bash -c 'if grep -q "Forwarding HTTP\|Forwarding SSH" /tmp/serveo.log; then grep "Forwarding" /tmp/serveo.log | head -1; else echo "Serveo setup in progress..."; fi'
-
-      - name: Monitor Boot and Display Status
-        timeout-minutes: 30
-        run: |
-          sudo bash -c 'cat << '\''EOF'\''
-          ==========================================
-          🖥️  ARM64 GNOME OS BOOTING WITH GRUB
-          ==========================================
+          sudo bash -c 'START=$(date +%s)
           
-          ⏳ Boot sequence starting...
-             UEFI → GRUB → ISO Boot → GNOME Session
-          EOF'
-          
-          sudo bash -c 'for i in {1..180}; do
-            REMAINING=$((180 - i))
-            
-            if [ -f /tmp/qemu.log ]; then
-              if grep -q "GRUB" /tmp/qemu.log; then
-                echo "✓ GRUB bootloader detected"
-              fi
-              
-              if grep -q "EFI stub\|Arch Linux\|Linux version" /tmp/qemu.log; then
-                echo "✓ Kernel loading..."
-              fi
-              
-              if grep -q "GNOME Session\|gnome-shell\|systemd" /tmp/qemu.log; then
-                echo "✓ GNOME session started!"
-                break
-              fi
-            fi
-            
-            if [ $((i % 3)) -eq 0 ]; then
-              echo "[$i/180] Boot in progress... ($REMAINING/60 min) | $(date +%H:%M:%S)"
-            fi
-            
-            sleep 10
-          done'
-          
-          sudo bash -c 'echo ""; echo "Boot monitoring complete"'
-
-      - name: Display Connection Info
-        run: |
-          sudo bash -c 'cat << '\''EOF'\''
-          ==========================================
-          🌐 CONNECTION INFORMATION
-          ==========================================
-          EOF'
-          
-          sudo bash -c 'if [ -f /tmp/serveo.log ]; then
-            echo "Serveo Tunnel Status:"
-            grep -E "Forwarding|Port|Error" /tmp/serveo.log | head -10
-          fi'
-          
-          sudo bash -c 'cat << '\''EOF'\''
-          
-          📋 System running on:
-             - QEMU ARM64 (cortex-a72)
-             - UEFI Firmware with GRUB bootloader
-             - 4 vCPUs, 4GB RAM
-          
-          Check logs for boot details:
-             QEMU Log: /tmp/qemu.log
-             Serveo Log: /tmp/serveo.log
-          
-          ==========================================
-          EOF'
-
-      - name: Keep System Running for Testing
-        timeout-minutes: 120
-        run: |
-          sudo bash -c 'echo "Keeping QEMU and tunnels alive for 2 hours..."
-          echo "System is ready for testing via Serveo tunnel"
+          echo "⏱️  HYPER-FAST BOOT MONITOR"
+          echo "================================"
           echo ""
           
-          for i in {1..120}; do
-            REMAINING=$((120 - i))
+          BOOT_DETECTED=0
+          GNOME_DETECTED=0
+          LAST_SIZE=0
+          STALL=0
+          
+          for i in {1..300}; do
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START))
             
-            if ! pgrep -f "qemu-system-aarch64" > /dev/null; then
-              echo "⚠ QEMU process has terminated"
-              echo ""
-              echo "Last 50 lines of QEMU output:"
-              tail -50 /tmp/qemu.log
+            if [ ! -f /tmp/qemu.log ]; then
+              sleep 1
+              continue
+            fi
+            
+            SIZE=$(wc -c < /tmp/qemu.log 2>/dev/null || echo 0)
+            
+            # Check for boot progress
+            tail -100 /tmp/qemu.log 2>/dev/null | grep -q "GRUB\|grub" && [ $BOOT_DETECTED -eq 0 ] && echo "✓ [$ELAPSED sec] GRUB detected" && BOOT_DETECTED=1
+            tail -100 /tmp/qemu.log 2>/dev/null | grep -q "Linux\|EFI stub" && [ $BOOT_DETECTED -eq 1 ] && echo "✓ [$ELAPSED sec] Kernel loading"
+            tail -100 /tmp/qemu.log 2>/dev/null | grep -q "systemd\|systemd-.*Starting" && echo "✓ [$ELAPSED sec] Init running"
+            
+            if tail -50 /tmp/qemu.log 2>/dev/null | grep -q "gnome-shell\|GNOME\|Session started\|desktop-ready"; then
+              [ $GNOME_DETECTED -eq 0 ] && echo "" && echo "🎉 [$ELAPSED sec] GNOME ONLINE!" && echo "" && GNOME_DETECTED=1
               break
             fi
             
-            if [ $((i % 10)) -eq 0 ]; then
-              echo "[$i/120] System active ($REMAINING min remaining) | $(date +%H:%M:%S)"
+            # Log growth check
+            if [ $SIZE -eq $LAST_SIZE ]; then
+              STALL=$((STALL + 1))
+              if [ $STALL -gt 24 ]; then
+                echo "⚠ Boot stalled after $ELAPSED sec"
+                break
+              fi
+            else
+              STALL=0
+            fi
+            LAST_SIZE=$SIZE
+            
+            # Print status every 5 seconds
+            if [ $((i % 1)) -eq 0 ] && [ $((i % 10)) -eq 0 ]; then
+              printf "\r⏳ [$ELAPSED sec] Booting... (Log: $SIZE bytes)"
+            fi
+            
+            sleep 1
+          done
+          
+          echo ""
+          echo "================================"'
+
+      - name: Boot Status Check
+        if: always()
+        run: |
+          sudo bash -c 'if [ -f /tmp/qemu.log ]; then
+            echo "📊 BOOT STATUS:"
+            echo "---"
+            
+            if grep -q "GNOME\|gnome-shell" /tmp/qemu.log 2>/dev/null; then
+              echo "✅ GNOME BOOTED"
+            elif grep -q "systemd" /tmp/qemu.log 2>/dev/null; then
+              echo "⏳ System init running (GNOME starting)"
+            elif grep -q "Linux" /tmp/qemu.log 2>/dev/null; then
+              echo "⏳ Kernel loaded"
+            elif grep -q "GRUB\|grub" /tmp/qemu.log 2>/dev/null; then
+              echo "⏳ GRUB bootloader active"
+            else
+              echo "⏳ Early boot stage"
+            fi
+            
+            echo ""
+            echo "Last 15 lines:"
+            echo "---"
+            tail -15 /tmp/qemu.log
+          fi'
+
+      - name: Setup Serveo (Background)
+        run: |
+          sudo bash -c 'nohup ssh -R 80:localhost:22 serveo.net > /tmp/serveo.log 2>&1 &
+          echo $! > /tmp/serveo.pid
+          sleep 2
+          echo "✓ Serveo tunnel started"'
+
+      - name: Keep System ALIVE
+        timeout-minutes: 120
+        run: |
+          sudo bash -c 'echo "System running for 2 hours..."
+          echo ""
+          
+          for i in {1..120}; do
+            if ! pgrep -f "qemu-system-aarch64" > /dev/null; then
+              echo "⚠ QEMU terminated"
+              break
+            fi
+            
+            if [ $((i % 20)) -eq 0 ]; then
+              REMAINING=$((120 - i))
+              echo "[$i/120] Active | $REMAINING min left | $(date +%H:%M:%S)"
             fi
             
             sleep 60
-          done
-          
-          echo "Test window closed or timeout reached"'
+          done'
 
-      - name: Upload Boot Logs
+      - name: Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: boot-logs
+          name: ultra-fast-logs
           path: |
             /tmp/qemu.log
             /tmp/serveo.log
-          retention-days: 7
+          retention-days: 5
 
       - name: Cleanup
         if: always()
         run: |
-          sudo bash -c 'echo "Cleaning up..."'
-          sudo bash -c 'if [ -f /tmp/qemu.pid ]; then kill -9 $(cat /tmp/qemu.pid) 2>/dev/null || true; fi'
-          sudo bash -c 'if [ -f /tmp/serveo.pid ]; then kill -9 $(cat /tmp/serveo.pid) 2>/dev/null || true; fi'
-          sudo bash -c 'pkill -9 qemu-system-aarch64 2>/dev/null || true'
-          sudo bash -c 'pkill -9 ssh 2>/dev/null || true'
-          sudo bash -c 'rm -rf /tmp/qemu-vm /tmp/start-qemu.sh'
-          sudo bash -c 'echo "✓ Cleanup complete"'
+          sudo bash -c 'pkill -9 qemu-system-aarch64 2>/dev/null || true
+          pkill -9 ssh 2>/dev/null || true
+          rm -rf /tmp/qemu-vm /tmp/start-qemu.sh 2>/dev/null || true
+          echo "✓ Cleaned up"'
