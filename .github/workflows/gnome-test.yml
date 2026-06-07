@@ -1,5 +1,4 @@
-#k
-name: ARM64 GNOME - VNC Desktop (Public Access via ngrok)
+name: ARM64 GNOME - VNC (Public ngrok URL)
 on: [push, workflow_dispatch]
 
 jobs:
@@ -7,7 +6,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
-      - name: Install gdown & Download ISO (With Retries)
+      - name: Install & Download ISO
         run: |
           sudo bash -c '
           apt-get update -qq
@@ -15,268 +14,160 @@ jobs:
           python3 -m pip install gdown --break-system-packages -q
           
           mkdir -p /mnt/iso-data
-          
           FILE_ID="1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag"
           OUTPUT="/mnt/iso-data/noctos-aarch64.iso"
           
-          echo "📥 Downloading ISO from Google Drive (with retries)..."
-          
-          for attempt in {1..5}; do
-            echo ""
-            echo "Attempt $attempt/5..."
-            
-            gdown "$FILE_ID" -O "$OUTPUT" --quiet 2>&1 && {
-              SIZE=$(stat -c%s "$OUTPUT" 2>/dev/null)
-              if [ $SIZE -gt 1000000000 ]; then
-                echo "✓ Download successful: $(numfmt --to=iec $SIZE 2>/dev/null || echo $SIZE bytes)"
-                exit 0
-              fi
-            }
-            
-            WAIT=$((30 * attempt))
-            echo "⏳ Rate limited, waiting ${WAIT}s before retry..."
-            sleep $WAIT
+          for i in {1..5}; do
+            gdown "$FILE_ID" -O "$OUTPUT" --quiet && break
+            sleep 30
           done
-          
-          echo "❌ Download failed after 5 attempts"
-          exit 1'
+          [ -f "$OUTPUT" ] && echo "✓ ISO: $(ls -lh $OUTPUT | awk '\''{print $5}'\'')" || exit 1'
 
-      - name: Verify ISO
-        run: |
-          sudo bash -c 'if [ -f /mnt/iso-data/noctos-aarch64.iso ]; then
-            SIZE=$(stat -c%s /mnt/iso-data/noctos-aarch64.iso 2>/dev/null || stat -f%z /mnt/iso-data/noctos-aarch64.iso)
-            SIZE_GB=$((SIZE / 1073741824))
-            echo "✓ ISO verified: ${SIZE_GB}GB"
-          else
-            echo "❌ ISO missing"
-            exit 1
-          fi'
-
-      - name: Install Tools for ISO Mounting
+      - name: Mount & Extract
         run: |
           sudo bash -c '
-          echo "Installing ISO tools..."
-          apt-get install -y squashfs-tools dmsetup 2>&1 | tail -3
-          echo "✓ Tools ready"'
-
-      - name: Mount ISO & Extract Filesystem
-        run: |
-          sudo bash -c '
-          echo "Mounting ISO..."
-          mkdir -p /tmp/iso-mount
-          mkdir -p /mnt/custom-os
-          
+          mkdir -p /tmp/iso-mount /mnt/custom-os
           mount -o loop /mnt/iso-data/noctos-aarch64.iso /tmp/iso-mount
           
-          echo "Looking for filesystem..."
-          if [ -f /tmp/iso-mount/arch/x86_64/airootfs.sfs ]; then
-            echo "Found x86_64 SquashFS"
-            SFS_PATH="/tmp/iso-mount/arch/x86_64/airootfs.sfs"
-          elif [ -f /tmp/iso-mount/arch/boot/aarch64/airootfs.sfs ]; then
-            echo "Found ARM64 SquashFS"
-            SFS_PATH="/tmp/iso-mount/arch/boot/aarch64/airootfs.sfs"
-          elif [ -f /tmp/iso-mount/live/filesystem.squashfs ]; then
-            echo "Found live SquashFS"
-            SFS_PATH="/tmp/iso-mount/live/filesystem.squashfs"
-          else
-            echo "No SquashFS found, copying raw ISO contents..."
-            cp -a /tmp/iso-mount/* /mnt/custom-os/ 2>/dev/null || true
-            SFS_PATH=""
-          fi
-          
-          if [ -n "$SFS_PATH" ] && [ -f "$SFS_PATH" ]; then
-            echo "Extracting SquashFS to /mnt/custom-os..."
-            unsquashfs -d /mnt/custom-os -f "$SFS_PATH" 2>&1 | tail -3
-            echo "✓ Extraction complete"
-          fi
+          SFS=$(find /tmp/iso-mount -name "*.squashfs" -o -name "*.sfs" 2>/dev/null | head -1)
+          [ -n "$SFS" ] && unsquashfs -d /mnt/custom-os -f "$SFS" 2>&1 | tail -1 || cp -a /tmp/iso-mount/* /mnt/custom-os/ 2>/dev/null
           
           umount /tmp/iso-mount
-          echo "✓ ISO mounted and extracted"'
+          echo "✓ Extracted"'
 
-      - name: Setup Chroot Environment
+      - name: Setup Chroot
         run: |
           sudo bash -c '
-          echo "Setting up chroot filesystem..."
-          
           mkdir -p /mnt/custom-os/{dev,sys,proc,dev/pts,tmp,run}
-          
           mount --bind /dev /mnt/custom-os/dev
           mount --bind /sys /mnt/custom-os/sys
           mount --bind /proc /mnt/custom-os/proc
           mount --bind /dev/pts /mnt/custom-os/dev/pts
-          
-          chmod 1777 /mnt/custom-os/tmp
-          chmod 1777 /mnt/custom-os/run
-          
-          echo "✓ Chroot environment ready"'
+          chmod 1777 /mnt/custom-os/{tmp,run}
+          echo "✓ Chroot ready"'
 
-      - name: Install GNOME & Display Server
+      - name: Install & Start GNOME
         run: |
           sudo bash -c '
-          echo "Installing packages in chroot..."
+          [ -f /mnt/custom-os/usr/bin/pacman ] && chroot /mnt/custom-os bash -c "pacman-key --init 2>/dev/null; pacman-key --populate archlinuxarm 2>/dev/null; pacman -Sy --noconfirm gnome-session gnome-shell tigervnc dbus 2>&1 | tail -1" || true
           
-          if command -v pacman &> /dev/null || [ -f /mnt/custom-os/usr/bin/pacman ]; then
-            echo "Using pacman..."
-            chroot /mnt/custom-os bash -c "
-              pacman-key --init 2>/dev/null || true
-              pacman-key --populate archlinuxarm 2>/dev/null || true
-              pacman -Sy --noconfirm --needed gnome-session gnome-shell tigervnc dbus xorg-server 2>&1 | tail -5 || true
-            "
-          else
-            echo "pacman not found, skipping package install"
-          fi
-          
-          echo "✓ Packages installed"'
-
-      - name: Create Desktop Startup Script
-        run: |
-          sudo bash -c 'cat > /mnt/custom-os/start-desktop.sh << '\''DESKTOP_EOF'\''
+          cat > /mnt/custom-os/start-desktop.sh << '\''EOF'\''
           #!/bin/bash
-          
           export $(dbus-launch)
-          
           export XDG_RUNTIME_DIR=/run/user/0
           mkdir -p $XDG_RUNTIME_DIR
           chmod 700 $XDG_RUNTIME_DIR
-          
           export DISPLAY=:1
-          export XDG_CURRENT_DESKTOP=GNOME
-          
-          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None || true
-          
+          vncserver :1 -geometry 1280x720 -depth 24 -SecurityTypes None
           gnome-session &
-          
           wait
-          DESKTOP_EOF
-          
+          EOF
           chmod +x /mnt/custom-os/start-desktop.sh
-          echo "✓ Startup script created"'
-
-      - name: Start Desktop in Chroot
-        run: |
-          sudo bash -c '
-          echo "Starting GNOME desktop..."
           
           nohup chroot /mnt/custom-os /bin/bash /start-desktop.sh > /tmp/desktop.log 2>&1 &
-          DESKTOP_PID=$!
-          echo $DESKTOP_PID > /tmp/desktop.pid
-          
-          echo "✓ Desktop started (PID: $DESKTOP_PID)"
-          sleep 5'
+          sleep 5
+          echo "✓ GNOME started"'
 
-      - name: Setup VNC Web Bridge (noVNC)
+      - name: Start VNC Bridge
         run: |
           sudo bash -c '
-          echo "Installing noVNC..."
-          apt-get install -y novnc 2>&1 | tail -2 || echo "noVNC already installed"
-          
-          echo "Starting websockify bridge..."
-          nohup websockify --web=/usr/share/novnc/ 8080 localhost:5901 > /tmp/websockify.log 2>&1 &
-          WS_PID=$!
-          echo $WS_PID > /tmp/websockify.pid
-          
+          apt-get install -y novnc 2>&1 | tail -1
+          nohup websockify --web=/usr/share/novnc/ 8080 localhost:5901 > /tmp/vnc.log 2>&1 &
           sleep 2
-          echo "✓ Web bridge active (PID: $WS_PID)"'
+          echo "✓ VNC bridge active"'
 
-      - name: Setup ngrok Tunnel for Public Access
+      - name: Download & Start ngrok
         run: |
           sudo bash -c '
-          echo "Installing ngrok..."
-          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.zip -O /tmp/ngrok.zip
-          unzip -q /tmp/ngrok.zip -d /usr/local/bin/
-          chmod +x /usr/local/bin/ngrok
+          echo "Getting ngrok..."
+          cd /tmp
+          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.zip
+          unzip -q ngrok-v3-stable-linux-arm64.zip
+          chmod +x ngrok
           
-          echo "Starting ngrok tunnel on port 8080..."
-          nohup ngrok http 8080 > /tmp/ngrok.log 2>&1 &
+          echo "Starting ngrok (will take ~10 seconds to initialize)..."
+          ./ngrok http 8080 --log=stdout > /tmp/ngrok-raw.log 2>&1 &
           NGROK_PID=$!
-          echo $NGROK_PID > /tmp/ngrok.pid
+          echo $NGROK_PID
           
+          # Wait for ngrok to fully start and print its URL
+          sleep 15
+          
+          echo "✓ ngrok started"'
+
+      - name: Extract & Display ngrok URL
+        run: |
+          sudo bash -c '
+          echo ""
+          echo "=========================================="
+          echo "🌐 PUBLIC VNC URL"
+          echo "=========================================="
+          echo ""
+          
+          # Wait a bit more if needed
           sleep 5
           
-          echo "✓ ngrok tunnel started (PID: $NGROK_PID)"
-          echo ""
-          echo "🌐 PUBLIC VNC ACCESS:"
-          if grep -q "url=" /tmp/ngrok.log; then
-            echo ""
-            grep "url=" /tmp/ngrok.log | head -1
-            echo ""
-            echo "Open this URL in your browser and click the VNC link!"
+          if [ -f /tmp/ngrok-raw.log ]; then
+            # Look for the forwarding URL in ngrok logs
+            URL=$(grep -oP "https://[a-z0-9\-]+\.ngrok[^\s]+" /tmp/ngrok-raw.log | head -1)
+            
+            if [ -z "$URL" ]; then
+              # Alternative: look for the URL= pattern
+              URL=$(grep "URL" /tmp/ngrok-raw.log | grep -oP "https://[^\s]+" | head -1)
+            fi
+            
+            if [ -z "$URL" ]; then
+              # Last resort: show raw log
+              echo "⚠️  URL not found in log, showing raw output:"
+              echo ""
+              cat /tmp/ngrok-raw.log | head -30
+            else
+              echo "✅ COPY THIS URL:"
+              echo ""
+              echo "$URL"
+              echo ""
+              echo "✅ OPEN IN BROWSER"
+              echo "✅ VNC is at: $URL/vnc.html"
+              echo ""
+            fi
           else
-            echo "Tunnel initializing, check logs in 10 seconds..."
-          fi'
+            echo "❌ ngrok log not found"
+          fi
+          
+          echo "=========================================="
+          echo ""'
 
-      - name: Display Connection Info
-        run: |
-          sudo bash -c 'cat << '\''INFO_EOF'\''
-          ==========================================
-          🖥️  ARM64 GNOME DESKTOP ONLINE
-          ==========================================
-          
-          ✓ ISO Downloaded
-          ✓ Filesystem Extracted
-          ✓ Chroot Setup
-          ✓ GNOME Started
-          ✓ VNC Bridge Active
-          ✓ Public Tunnel Active
-          
-          📡 PUBLIC URL:
-          Check the ngrok output above ⬆️
-          
-          It looks like: https://XXXX-XXXX-XXXX.ngrok-free.app
-          
-          Open that URL → Click VNC tab → Connect!
-          
-          ==========================================
-          INFO_EOF'
-
-      - name: Keep Services Alive (2 hours)
+      - name: Monitor & Display URL Every Minute
         timeout-minutes: 120
         run: |
           sudo bash -c '
-          echo "Services running..."
-          echo ""
-          
-          # Show ngrok URL every 30 seconds
           for i in {1..120}; do
-            if [ $((i % 6)) -eq 0 ]; then
-              echo "[$i/120] Services active..."
-              if [ -f /tmp/ngrok.log ]; then
-                NGROK_URL=$(grep "url=" /tmp/ngrok.log | head -1)
-                if [ -n "$NGROK_URL" ]; then
-                  echo "📡 Access: $NGROK_URL"
-                fi
+            if [ $((i % 2)) -eq 0 ]; then
+              echo "[$i/120] Running..."
+              
+              if [ -f /tmp/ngrok-raw.log ]; then
+                URL=$(grep -oP "https://[a-z0-9\-]+\.ngrok[^\s]+" /tmp/ngrok-raw.log | head -1)
+                [ -n "$URL" ] && echo "📡 URL: $URL" || echo "URL not yet available..."
               fi
             fi
             sleep 60
           done'
 
-      - name: Upload Logs
+      - name: Upload All Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: desktop-logs
           path: |
             /tmp/desktop.log
-            /tmp/websockify.log
-            /tmp/ngrok.log
+            /tmp/vnc.log
+            /tmp/ngrok-raw.log
           retention-days: 5
 
       - name: Cleanup
         if: always()
         run: |
           sudo bash -c '
-          echo "Cleaning up..."
-          
-          pkill -9 chroot 2>/dev/null || true
-          pkill -9 vncserver 2>/dev/null || true
-          pkill -9 websockify 2>/dev/null || true
-          pkill -9 ngrok 2>/dev/null || true
-          
-          umount /mnt/custom-os/dev/pts 2>/dev/null || true
-          umount /mnt/custom-os/dev 2>/dev/null || true
-          umount /mnt/custom-os/sys 2>/dev/null || true
-          umount /mnt/custom-os/proc 2>/dev/null || true
-          
-          rm -rf /mnt/custom-os /tmp/iso-mount
-          
-          echo "✓ Cleanup complete"'
+          pkill -9 chroot vncserver websockify ngrok 2>/dev/null || true
+          umount /mnt/custom-os/{dev/pts,dev,sys,proc} 2>/dev/null || true
+          rm -rf /mnt/custom-os /tmp/iso-mount'
