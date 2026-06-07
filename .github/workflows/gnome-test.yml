@@ -1,4 +1,4 @@
-name: ARM64 GNOME - VNC (curl download, no gdown)
+name: ARM64 GNOME - VNC (Self-Hosted ISO via ngrok)
 on: [push, workflow_dispatch]
 
 jobs:
@@ -6,28 +6,27 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
-      - name: Download ISO (curl - no rate limit)
+      - name: Download ISO (from self-hosted server)
         run: |
           sudo bash -c '
           mkdir -p /mnt/iso-data
-          FILE_ID="1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag"
+          ISO_URL="https://headroom-suave-lapel.ngrok-free.dev/noctos-aarch64.iso"
           OUTPUT="/mnt/iso-data/noctos-aarch64.iso"
           
-          echo "Downloading ISO via curl (same as browser)..."
+          echo "Downloading from: $ISO_URL"
           
-          curl -L "https://drive.google.com/uc?id=$FILE_ID&export=download" \
+          curl -L "$ISO_URL" \
             -o "$OUTPUT" \
             --max-time 1800 \
             -C - \
-            -H "User-Agent: Mozilla/5.0" \
-            2>&1 | tail -5
+            2>&1 | tail -10
           
           if [ -f "$OUTPUT" ] && [ -s "$OUTPUT" ]; then
             SIZE=$(ls -lh $OUTPUT | awk '\''{print $5}'\'')
             echo "✓ Downloaded: $SIZE"
             exit 0
           else
-            echo "❌ Failed"
+            echo "❌ Download failed"
             exit 1
           fi'
 
