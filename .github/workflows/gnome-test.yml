@@ -1,5 +1,4 @@
-#k
-name: ARM64 GNOME - VNC (Public ngrok URL)
+name: ARM64 GNOME - VNC (curl download, no gdown)
 on: [push, workflow_dispatch]
 
 jobs:
@@ -7,22 +6,30 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
-      - name: Install & Download ISO
+      - name: Download ISO (curl - no rate limit)
         run: |
           sudo bash -c '
-          apt-get update -qq
-          apt-get install -y python3-pip
-          python3 -m pip install gdown --break-system-packages -q
-          
           mkdir -p /mnt/iso-data
           FILE_ID="1vfX9EwmDPqFYgNiiJAYWH51zCTGVlzag"
           OUTPUT="/mnt/iso-data/noctos-aarch64.iso"
           
-          for i in {1..5}; do
-            gdown "$FILE_ID" -O "$OUTPUT" --quiet && break
-            sleep 30
-          done
-          [ -f "$OUTPUT" ] && echo "✓ ISO: $(ls -lh $OUTPUT | awk '\''{print $5}'\'')" || exit 1'
+          echo "Downloading ISO via curl (same as browser)..."
+          
+          curl -L "https://drive.google.com/uc?id=$FILE_ID&export=download" \
+            -o "$OUTPUT" \
+            --max-time 1800 \
+            -C - \
+            -H "User-Agent: Mozilla/5.0" \
+            2>&1 | tail -5
+          
+          if [ -f "$OUTPUT" ] && [ -s "$OUTPUT" ]; then
+            SIZE=$(ls -lh $OUTPUT | awk '\''{print $5}'\'')
+            echo "✓ Downloaded: $SIZE"
+            exit 0
+          else
+            echo "❌ Failed"
+            exit 1
+          fi'
 
       - name: Mount & Extract
         run: |
@@ -75,7 +82,7 @@ jobs:
           apt-get install -y novnc 2>&1 | tail -1
           nohup websockify --web=/usr/share/novnc/ 8080 localhost:5901 > /tmp/vnc.log 2>&1 &
           sleep 2
-          echo "✓ VNC bridge active"'
+          echo "✓ VNC active"'
 
       - name: Download & Start ngrok
         run: |
@@ -86,14 +93,10 @@ jobs:
           unzip -q ngrok-v3-stable-linux-arm64.zip
           chmod +x ngrok
           
-          echo "Starting ngrok (will take ~10 seconds to initialize)..."
+          echo "Starting ngrok..."
           ./ngrok http 8080 --log=stdout > /tmp/ngrok-raw.log 2>&1 &
-          NGROK_PID=$!
-          echo $NGROK_PID
           
-          # Wait for ngrok to fully start and print its URL
           sleep 15
-          
           echo "✓ ngrok started"'
 
       - name: Extract & Display ngrok URL
@@ -105,31 +108,21 @@ jobs:
           echo "=========================================="
           echo ""
           
-          # Wait a bit more if needed
           sleep 5
           
           if [ -f /tmp/ngrok-raw.log ]; then
-            # Look for the forwarding URL in ngrok logs
             URL=$(grep -oP "https://[a-z0-9\-]+\.ngrok[^\s]+" /tmp/ngrok-raw.log | head -1)
             
-            if [ -z "$URL" ]; then
-              # Alternative: look for the URL= pattern
-              URL=$(grep "URL" /tmp/ngrok-raw.log | grep -oP "https://[^\s]+" | head -1)
-            fi
-            
-            if [ -z "$URL" ]; then
-              # Last resort: show raw log
-              echo "⚠️  URL not found in log, showing raw output:"
-              echo ""
-              cat /tmp/ngrok-raw.log | head -30
-            else
+            if [ -n "$URL" ]; then
               echo "✅ COPY THIS URL:"
               echo ""
               echo "$URL"
               echo ""
-              echo "✅ OPEN IN BROWSER"
-              echo "✅ VNC is at: $URL/vnc.html"
+              echo "✅ Open in browser: $URL/vnc.html"
               echo ""
+            else
+              echo "⚠️  URL not found yet, showing log:"
+              cat /tmp/ngrok-raw.log | head -30
             fi
           else
             echo "❌ ngrok log not found"
@@ -138,7 +131,7 @@ jobs:
           echo "=========================================="
           echo ""'
 
-      - name: Monitor & Display URL Every Minute
+      - name: Monitor & Display URL
         timeout-minutes: 120
         run: |
           sudo bash -c '
@@ -148,13 +141,13 @@ jobs:
               
               if [ -f /tmp/ngrok-raw.log ]; then
                 URL=$(grep -oP "https://[a-z0-9\-]+\.ngrok[^\s]+" /tmp/ngrok-raw.log | head -1)
-                [ -n "$URL" ] && echo "📡 URL: $URL" || echo "URL not yet available..."
+                [ -n "$URL" ] && echo "📡 URL: $URL" || echo "Waiting for URL..."
               fi
             fi
             sleep 60
           done'
 
-      - name: Upload All Logs
+      - name: Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
